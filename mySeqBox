@@ -1,0 +1,359 @@
+#!/bin/bash
+# mySeqBox
+# Version 4
+# (earlier versions was named "mySeqBox.mount.sh")
+# Call syntax:
+# mySeqBox [-V||-VV] [-n|-dry-run] [-ext2|-e2fs] [-rw|-RW] [-d] [-bcp|-backup] hcVolFile
+# mySeqBox [help|-h|-help|--help]
+#---------------------------------------------------------------------------------------------------
+# Copyright (c) 2018-2022, Denis I. Markov aka MariK
+# < dm DOT marik DOT 230185 AT gmail DOT com >
+# < t DOT me / dm_MariK >
+# All rights reserved.
+# 
+# This code is multi-licensed under:  
+# * CC BY-SA version 4.0 or later;
+# * GNU GPL version 3 or later;
+# * GNU Lesser GPL version 2.1 or later.
+# Verbatim copy of any of these licenses can be found in the Internet on the corresponding resources.
+# You are allowed to choose any of or any number of these licenses on your taste. ;-)
+# 
+# The author preserves the right for his own to change the license to MIT License 
+# or any other permissive license at any moment he wants.
+#  * The term "permissive license" is used here in the exactly same sense as the term 
+# "lax permissive license" has been used in the article 'License Compatibility and Relicensing' 
+# by Richard Stallman [ https://www.gnu.org/licenses/license-compatibility.en.html ].
+#---------------------------------------------------------------------------------------------------
+## *** Presets and Defaults ***
+# -----------------------------------------------------------------------
+# !!!  DO NOT MODIFY THE FOLLOWING VARIABLES  !!!  (Embeded variables)
+# There to search for VeraCrypt Volumes if non-absolute path specified:
+VOL_PATH_PFX=/home/$USER/.Private
+# There to mount a VeraCrypt Volume (ENC_VOL): {MNT_PNT_PFX}/{MNT_DIR_PFX}_VolName
+# (here VolName is the same as the file-name of an ENC_VOL but without path and .hc extension)
+MNT_PNT_PFX=/home/$USER/Private
+MNT_DIR_PFX="VOL"
+# <-----------------------------  DO NOT MODIFY THE VARIABLES ABOVE  !!!
+# -----------------------------------------------------------------------
+# Filesystem mount options
+# ------------------------
+# --fs-options=$FS_OPTS
+# The FS_OPTS argument is passed to mount(8) command with option -o 
+# when a filesystem on a VeraCrypt volume is mounted.
+# Here comes 'optimal' (IMHO!!!) mount options for "vfat" filesystem and for "ext2" filesystem:
+#VFAT_OPTS="rw,nosuid,nodev,noexec,sync,relatime,flush,errors=remount-ro,fmask=0111,dmask=0000,codepage=866,iocharset=utf8,shortname=mixed,utf8"
+#E2FS_OPTS="nosuid,nodev,noexec,sync,relatime,errors=remount-ro"
+VFAT_OPTS="nosuid,nodev,noexec,sync,relatime,errors=remount-ro,flush,fmask=0111,dmask=0000,codepage=437,iocharset=iso8859-1,shortname=mixed"
+E2FS_OPTS="nosuid,nodev,exec,sync,relatime,errors=remount-ro"
+# -----------------------------------------------------------------------
+# Variables that being adjusted by command line options
+# -----------------------------------------------------
+# Verbosity of cmdline output: "V" (verbose), "VV" (very verbose), or "No" (very silent).
+VBSOUT="No"
+# Dry-run mode. If "Yes" do nothing, only display summary about planned activities.
+DRYRUN="No"
+# Mount the Volume READ-ONLY:
+READONLY="Yes"
+# Back up the VeraCrypt Volume's host-file INSTEAD OF mount:
+DO_BCP="No"
+# Only dismount mounted volume. If "Yes" do not try to mount non-mounted volume or backup it.
+DISMNT_ONLY="No"
+# We expect FAT32 (VFAT) filesystem by default.
+FS_OPTS=$VFAT_OPTS
+#---------------------------------------------------------------------------------------------------
+print_help() {
+  cat <<EOF
+  mySeqBox [-V||-VV] [-n|-dry-run] [-ext2|-e2fs] [-rw|-RW] [-d] [-bcp|-backup] USER_VOL
+  mySeqBox [help|-h|-help|--help]
+  
+The special wrapper to mount/dismount VeraCrypt volumes. 
+Volumes are mounted in GUI-mode (for security reasons) and dismounted in CLI-mode.
+When the script is called for the first time with a given "USER_VOL" (see below) 
+the VeraCrypt volume is mounted. To dismount the volume just call the script
+with the same "USER_VOL" parameter one more time.
+
+The "USER_VOL" parameter can contain either full path to a VeraCrypt volume's host-file
+(starts with "/" symbol) or just a relative path. In the last case "USER_VOL" must NOT 
+start with "/" symbol and is assumed to be relative to ${VOL_PATH_PFX}/
+
+Volumes are mounted to directories created inside the ${MNT_PNT_PFX}/ folder.
+A typical mount-point look like: ${MNT_PNT_PFX}/{MNT_DIR_PFX}_VolName.
+Here "VolName" is the same as the file-name of the VeraCrypt volume to be mounted, 
+but without its path and .hc extension. It is derived from "USER_VOL" parameter.
+The MNT_DIR_PFX is defined automatically as follows:
+ * by default it is "VOL" for volumes' host-files located under ${VOL_PATH_PFX}/
+     (i.e. if "USER_VOL" contains relative path), or
+ * "absVOL" if "USER_VOL" contains full path (starting with /)
+ and two special cases:
+ * "_NewVol" for volumes' host-files located inside the folders: "<SOME_DIR>/.Private/_NEW/"
+     (i.e. LAST 14 chars of VOL_PATH is "/.Private/_NEW")
+ * "bcp" for volumes' host-files located inside the folders: "<SOME_DIR>/.Private/_BCP/"
+     (i.e. LAST 14 chars of VOL_PATH is "/.Private/_BCP/"
+ --- --- ---
+The mount-point directory is removed on the volume dismount.
+.........................................................................................
+  !!! N.B. !!!
+* Although any "USER_VOL" can be used, it is STRONGLY NON-RECOMMENDED to mount volumes 
+located outside the ${VOL_PATH_PFX} directory due to the possibility of the mount-point conflict !!!
+* The only way to avoid this conflict is to NEVER use the same "pure" file-names 
+for any of your VeraCrypt volumes even if they are located under different absolute paths !!!
+(The .hc extension is removed on the mount-point name construction!)
+.........................................................................................
+
+ Read-only or Read/Write mode: [-rw|-RW]
+ ---------------------------------------
+By default the volume is mounted in READ-ONLY mode, except the case when at least one
+of the following conditions is met:
+ * "-rw" (or "-RW") parameter is passed;
+ * the volume's host-file is located inside the folder: "<SOME_DIR>/.Private/_NEW/"
+   (i.e. LAST 14 chars of VOL_PATH is "/.Private/_NEW").
+--------------------------
+ !!! NOTE that volumes' host-files located inside the folders: "<SOME_DIR>/.Private/_BCP/" 
+   (i.e. LAST 14 chars of VOL_PATH is "/.Private/_BCP") are ALWAYS mounted in READ-ONLY mode, 
+   even if "-rw" (or "-RW") parameter is passed explicitly.
+--------------------------
+Also NOTE that there is one more chance to switch between RO and RW modes. It can be done on 
+GUI mounting dialog and it is under full control of the user's will.
+
+ File systems: [-ext2|-e2fs]
+ ---------------------------
+Only two file systems are supported: FAT32 and EXT2. There is no sense (IMHO) to support 
+any lower versions of FAT. On the other hand it is STRONGLY NON-RECOMMENDED to use any kind 
+of journaled file system on VeraCrypt volume (See the official VeraCrypt manual).
+By default FAT32 (VFAT) file system is expected. Pass "-ext2" or "-e2fs" option if your 
+VeraCrypt volume is formatted to EXT2. (Optimal fs-options, that is passed by VeraCrypt binary 
+to mount command with option -o, differ for this two different file systems. Actually, the 
+type of the file system is recognized automatically; this option is only to determine the 
+optimal fs-options.)
+
+ Back-Up Feature: [-bcp|-backup]
+ -------------------------------
+If "-bcp" or "-backup" option is passed the script's behaviour is completely changed.
+Instead of mounting VeraCrypt volume the script makes back-up of its host-file.
+If the volume is already mounted it will be dismounted first and then back-up will be created.
+Back-Up files are placed in the same folder* as their originals and are named as follows:
+"VolName.TIMESTAMP.hc"
+There "VolName" is the same as above (i.e. the file-name of a VeraCrypt volume, 
+but without its path and .hc extension) and TIMESTAMP is result of calling "date +%Y.%m.%d-%s"
+  !!! N.B. !!!
+* There is one exception to that rule. 
+If the original volume's host-file is located inside any folder of the kind 
+"<SOME_DIR>/.Private/_NEW/" (i.e. LAST 14 chars of VOL_PATH is "/.Private/_NEW")
+then back-up will be placed to "../_BCP/" relative the path of the original.
+----------------------------------------------------------------------------------------------
+
+ Dismount-only mode: [-d]
+ ------------------------
+If "-d" option is passed the script will only try to dismount already-mounted volume.
+If the volume is not mounted it will NOT be mounted. If "-bcp" or "-backup" option is passed
+simultaneously with "-d" option it will be ignored. Back-up is NEVER created in "Dismount-Only" mode.
+"-d" option takes precedence over "-bcp" or "-backup" option !!!
+
+ Verbosity Level: [-V||-VV]
+ -------------------------
+By default the script is very silent. It typically produces an output if something went wrong or
+reports that back-up is created and there it is placed (file name and path of the back-up). 
+But this behaviour can be modified by passing either "-V" option for Verbose output or 
+"-VV" for Very Verbose output. Note that if both of them are passed simultaneously the last one
+takes precedence.
+
+ Dry-run mode: [-n|-dry-run]
+ ---------------------------
+If "-n" or "-dry-run" option is passed the script performs a trial run with nothing being 
+mounted / dismounted or backed up. Dry-run mode implicitly assumes "-VV" option even if it is
+not passed, i.e. in the dry-run mode the script is always Very Verbose.
+
+***
+  !!! N.B. !!!
+  While the options can be passed IN ANY order, ONLY ONE "USER_VOL" parameter is allowed !!!
+  If you simultaneously pass more than one "USER_VOL" - only the last one of them will be treated,
+  while all the others will be omitted.
+***
+  
+EOF
+}
+#---------------------------------------------------------------------------------------------------
+# Parse cmdline options
+if [[ "$#" -eq 0 ]]; then
+  print_help
+  exit 0
+fi
+USER_VOL=""
+while [[ "$#" -gt 0 ]]; do 
+  case $1 in
+    help|-h|-help|--help)
+      print_help
+      exit 0
+      ;;
+      
+    -V|-VV) VBSOUT=${1#*-};;
+    -n|-dry-run) DRYRUN="Yes";;
+    -rw|-RW) READONLY="No";;
+    -bcp|-backup) DO_BCP="Yes";;  
+    -d) DISMNT_ONLY="Yes";;
+    -ext2|-e2fs) FS_OPTS=$E2FS_OPTS;;
+    *) 
+      USER_VOL=$1
+      #break
+      ;;
+  esac 
+  shift 
+done
+#---------------------------------------------------------------------------------------------------
+## *** Mount-Point, mount rules and full path to the Volume's host-file and its backup. ***
+##     --------------------------------------------------------------------------------
+# ENC_VOL variable will contain the full path to the VeraCrypt Volume's host-file.
+# Check whether USER_VOL contains a full path (starts with "/") or not;
+# if not -- it is assumed to be relative to VOL_PATH_PFX. 
+# Modify MNT_DIR_PFX if USER_VOL contains a full path.
+if [[ "${USER_VOL:0:1}" = "/" ]] ; then
+  ENC_VOL="$USER_VOL"
+  MNT_DIR_PFX="absVOL"
+else 
+  ENC_VOL="${VOL_PATH_PFX}/${USER_VOL}"
+fi
+# Analyze path to the ENC_VOL and its file-name: 
+# setup the Mount-Point and BCP_PATH, adjust READONLY and MNT_DIR_PFX variables' values.
+# * BCP_PATH is the absolute path to the dir there Back-ups of Volumes' files will be created. 
+#VOL_PATH=`dirname ${ENC_VOL}`
+#VOL_FILE=`basename ${ENC_VOL}`
+VOL_PATH="${ENC_VOL%/*}"
+VOL_FILE="${ENC_VOL##*/}"
+BCP_PATH="$VOL_PATH"
+if [[ x"${VOL_PATH:(-14)}" = x"/.Private/_NEW" ]] ; then
+  # (i.e. last 14 chars of VOL_PATH is "/.Private/_NEW")
+  # Special mount rules for the Volumes located in <SomePath>/.Private/_NEW
+  MNT_DIR_PFX="_NewVol"
+  READONLY="No"
+  BCP_PATH="${VOL_PATH%/_NEW}/_BCP"
+elif [[ x"${VOL_PATH:(-14)}" = x"/.Private/_BCP" ]] ; then
+  # Special mount rules for the Volumes located in <SomePath>/.Private/_BCP
+  MNT_DIR_PFX="bcp"
+  READONLY="Yes"
+fi
+# Mount-Point is of the form: {MNT_PNT_PFX}/{MNT_DIR_PFX}_VolName
+# (VolName is VOL_FILE without .hc extension)
+MNT_PNT="${MNT_PNT_PFX}/${MNT_DIR_PFX}_${VOL_FILE%.hc}"
+
+# Adjust FS_OPTS to be in conformity with READONLY variable.
+if [ x$READONLY = x"Yes" ] ; then
+  FS_OPTS="ro,$FS_OPTS"
+else
+  FS_OPTS="rw,$FS_OPTS"
+fi
+
+# DISMNT_ONLY and DO_BCP are mutually exclusive. DISMNT_ONLY takes precedence.
+if [ x$DISMNT_ONLY = x"Yes" ] ; then
+  DO_BCP="No"
+fi
+
+# We are always very verbose in dry-run mode.
+if [ x$DRYRUN = x"Yes" ] ; then
+  VBSOUT="VV"
+fi
+#---------------------------------------------------------------------------------------------------
+do_backup() {
+  # Define the full name of the Volume's Back-up (with the absolute path).
+  BCP_NAME="${BCP_PATH}/${VOL_FILE%.hc}.`date +%Y.%m.%d-%s`.hc"
+  if [ x$VBSOUT = x"VV" ] || [ x$VBSOUT = x"V" ] ; then
+    cat <<EOF
+Expected Back-Up of the Volume host-file:
+    $BCP_NAME
+EOF
+  fi
+  if [ x$DRYRUN != x"Yes" ] ; then
+    # making a backup ...
+    mkdir -p "$BCP_PATH"
+    #cp -T "$ENC_VOL" "$BCP_NAME"
+    #cp -T --preserve=timestamps "$ENC_VOL" "$BCP_NAME"
+    sudo cp -T --preserve=all "$ENC_VOL" "$BCP_NAME"
+    sudo chmod a-w "$BCP_NAME"
+    if [ $? -eq 0 ] ; then
+      echo "Back-Up is created: ${BCP_NAME}"
+      exit 0
+    fi
+  fi
+}
+#---------------------------------------------------------------------------------------------------
+## Display Summary
+## ---------------
+if [ x$VBSOUT = x"VV" ] ; then # Display very verbose summary.
+  cat <<EOF
+USER_VOL:    $USER_VOL
+DO_BCP:      $DO_BCP
+READONLY:    $READONLY
+DISMNT_ONLY: $DISMNT_ONLY
+VBSOUT:      $VBSOUT
+DRYRUN:      $DRYRUN
+---------------------------
+ENC_VOL:     $ENC_VOL
+MNT_DIR_PFX: $MNT_DIR_PFX
+VOL_PATH:    $VOL_PATH
+VOL_FILE:    $VOL_FILE
+BCP_PATH:    $BCP_PATH
+---------------------------
+Encrypted Volume host-file:
+    $ENC_VOL
+Mount-Point:
+    $MNT_PNT
+Filesystem mount options:
+    $FS_OPTS
+Mount the Volume READ-ONLY: $READONLY
+
+EOF
+elif [ x$VBSOUT = x"V" ] ; then
+  cat <<EOF
+$ENC_VOL
+$MNT_PNT
+mount options: $FS_OPTS
+EOF
+fi
+
+if [ x$DRYRUN = x"Yes" ] ; then
+  if [ x$DO_BCP = x"Yes" ] ; then
+    do_backup
+  fi
+  echo -e "\n *** DRY-RUN MODE *** \n Do nothing. Exiting. \n"
+  exit 0
+fi
+#---------------------------------------------------------------------------------------------------
+## *** Mount, dismount, backup ***
+##     -----------------------
+# Check whether the Encrypted Volume's host-file exists.
+if [[ ! -f "$ENC_VOL" ]] ; then
+  cat <<EOF
+Encrypted Volume host-file is not found!
+    $ENC_VOL
+    -- there is no such file.
+(Call "mySeqBox help" for the usage info.)
+EOF
+  exit 2
+fi
+# *** 
+# Dismount mounted Volume.
+if [[ "`mount | grep "${MNT_PNT}"`" ]] ; then
+  [ x$VBSOUT = x"V" -o x$VBSOUT = x"VV" ] && echo "Volume is mounted. Dismounting..."
+  sudo sync
+  sudo fuser -km "${MNT_PNT}"
+  veracrypt -t -d "$ENC_VOL" 
+  #veracrypt -d "$ENC_VOL" 
+  if [ $? -eq 0 ] ; then 
+    rmdir "$MNT_PNT"
+    if [ x$DO_BCP = x"Yes" ] ; then
+      do_backup
+    fi
+  fi
+# Volume is NOT mounted AND value of DISMNT_ONLY is NOT "Yes".
+elif [ x$DISMNT_ONLY != x"Yes" ] ; then
+  # Either back-up the non-mounted Volume's host-file ...
+  if [ x$DO_BCP = x"Yes" ] ; then
+    do_backup
+  else # ... or prepare the Mount-Point and mount the Volume.
+    mkdir -p "$MNT_PNT"
+    if [ x$READONLY = x"Yes" ] ; then
+      veracrypt -m ro --fs-options=${FS_OPTS} "$ENC_VOL" "$MNT_PNT"
+    else
+      veracrypt --fs-options=${FS_OPTS} "$ENC_VOL" "$MNT_PNT"
+    fi
+  fi
+fi
